@@ -23,11 +23,9 @@ public abstract class AbstractProcessInstance<T> implements ProcessInstance<T> {
         this.variables = variables;
     }
 
-    public abstract org.kie.api.definition.process.Process legacyProcess();
-
     public void start() {
         Map<String, Object> map = bind(variables);
-        String id = legacyProcess().getId();
+        String id = process.legacyProcess().getId();
         this.legacyProcessInstance =
                 rt.createProcessInstance(id, map);
         process.instances().update(
