@@ -21,7 +21,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
@@ -36,31 +35,18 @@ import org.apache.maven.plugins.annotations.Mojo;
 import org.apache.maven.plugins.annotations.Parameter;
 import org.apache.maven.plugins.annotations.ResolutionScope;
 import org.apache.maven.project.MavenProject;
-import org.drools.compiler.builder.impl.KnowledgeBuilderImpl;
-import org.drools.compiler.compiler.io.memory.MemoryFileSystem;
 import org.drools.compiler.kie.builder.impl.InternalKieModule;
-import org.drools.compiler.kie.builder.impl.KieBuilderImpl;
-import org.drools.compiler.kie.builder.impl.KieModuleKieProject;
-import org.drools.compiler.kie.builder.impl.ResultsImpl;
-import org.drools.compiler.kproject.models.KieBaseModelImpl;
 import org.drools.core.io.impl.FileSystemResource;
 import org.drools.core.runtime.process.InternalProcessRuntime;
 import org.drools.core.util.StringUtils;
 import org.drools.core.xml.SemanticModules;
-import org.drools.modelcompiler.builder.CanonicalModelKieProject;
-import org.drools.modelcompiler.builder.KieModuleModelMethod;
-import org.drools.modelcompiler.builder.ModelBuilderImpl;
-import org.drools.modelcompiler.builder.ModelWriter;
-import org.drools.modelcompiler.builder.ProjectSourceClass;
 import org.jbpm.assembler.BPMN2AssemblerService;
 import org.jbpm.bpmn2.xml.BPMNDISemanticModule;
 import org.jbpm.bpmn2.xml.BPMNExtensionsSemanticModule;
 import org.jbpm.bpmn2.xml.BPMNSemanticModule;
-import org.jbpm.compiler.ProcessBuilderImpl;
 import org.jbpm.compiler.canonical.ProcessToExecModelGenerator;
 import org.jbpm.compiler.xml.XmlProcessReader;
 import org.jbpm.workflow.instance.impl.WorkflowProcessInstanceImpl;
-import org.kie.api.KieServices;
 import org.kie.api.definition.process.Process;
 import org.kie.api.definition.process.WorkflowProcess;
 import org.kie.api.io.Resource;
@@ -69,7 +55,6 @@ import org.kie.api.io.ResourceType;
 import org.kie.api.io.ResourceWithConfiguration;
 import org.kie.api.runtime.process.ProcessInstance;
 import org.kie.internal.builder.KnowledgeBuilder;
-import org.kie.internal.builder.KnowledgeBuilderFactory;
 import org.kie.internal.io.ResourceWithConfigurationImpl;
 
 import com.github.javaparser.JavaParser;
@@ -102,6 +87,8 @@ import com.github.javaparser.ast.stmt.IfStmt;
 import com.github.javaparser.ast.stmt.ReturnStmt;
 import com.github.javaparser.ast.type.ClassOrInterfaceType;
 import com.github.javaparser.ast.type.UnknownType;
+import org.kie.maven.plugin.process.ProcessInstanceSourceClass;
+import org.kie.maven.plugin.process.ProcessSourceClass;
 import org.xml.sax.SAXException;
 
 @Mojo(name = "generateProcessModel",
@@ -129,6 +116,8 @@ public class GenerateProcessModelMojo extends AbstractKieMojo {
     @Parameter(required = true, defaultValue = "${project.basedir}")
     private File projectDir;
 
+    private final String additionalCompilerPath = "/generated-sources/process/main/java";
+
     @Parameter
     private Map<String, String> properties;
 
@@ -137,6 +126,8 @@ public class GenerateProcessModelMojo extends AbstractKieMojo {
 
     @Parameter(property = "generateProcessModel", defaultValue = "yes")
     private String generateProcessModel;
+
+
 
     @Override
     public void execute() throws MojoExecutionException, MojoFailureException {
@@ -156,52 +147,50 @@ public class GenerateProcessModelMojo extends AbstractKieMojo {
 
             getLog().debug("Process Files to process: " + processFiles);
             List<Process> processes = new ArrayList<>();
-
+            List<ProcessSourceClass> ps = new ArrayList<>();
+            List<ProcessInstanceSourceClass> pis = new ArrayList<>();
+            int i = 0;
             for (File bpmnFile : processFiles) {
                 getLog().info(bpmnFile.getName());
                 FileSystemResource r = new FileSystemResource(bpmnFile);
                 processes.addAll(parseProcessFile(r));
             }
 
-            final String additionalCompilerPath = "/generated-sources/process/main/java";
             addNewCompileRoot(additionalCompilerPath);
 
             for (Process process : processes) {
-                WorkflowProcess workFlowProcess = (WorkflowProcess) process;
+                Generator generator = new Generator(process);
+                String fname = generator.generate();
+                String packageName = process.getPackageName();
+                String classPrefix = getClassPrefix(process);
+                String pojoName = generator.modelClazzName;
 
-                String classPrefix = StringUtils.capitalize(ProcessToExecModelGenerator.INSTANCE.exctactProcessId(process.getId()));
-                String packageName = process.getPackageName().replaceAll("\\.", "/");
+                if (generator.isPublic()) {
+                    ProcessSourceClass p = new ProcessSourceClass(packageName, classPrefix, pojoName);
+                    ProcessInstanceSourceClass pi = new ProcessInstanceSourceClass(packageName, classPrefix, pojoName);
 
-                String sourceContent = ProcessToExecModelGenerator.INSTANCE.generate(workFlowProcess);
-                // create class with executable model for the process
-                String processClazzName = classPrefix + "Process";
-                final Path processFileNameRelative = transformPathToMavenPath( packageName + "/" + processClazzName + ".java");
+                    ps.add(p);
+                    pis.add(pi);
 
-                compiledClassNames.add(getCompiledClassName(processFileNameRelative));
-
-                final Path processFileName = Paths.get(targetDirectory.getPath(), additionalCompilerPath, processFileNameRelative.toString());
-                createSourceFile(processFileName, sourceContent);
-
-                if (WorkflowProcess.PUBLIC_VISIBILITY.equalsIgnoreCase(workFlowProcess.getVisibility())) {
-
-                    // create model class for all variables
-                    String modelClazzName = classPrefix + "Model";
-                    String modelDataClazz = ProcessToExecModelGenerator.INSTANCE.generateModel(workFlowProcess);
-
-                    final Path modelFileNameRelative = transformPathToMavenPath( packageName + "/" + modelClazzName + ".java");
-                    final Path modelFileName = Paths.get(targetDirectory.getPath(), additionalCompilerPath, modelFileNameRelative.toString());
-                    createSourceFile(modelFileName, modelDataClazz);
-
-
-                    // create REST resource class for process
-                    String resourceClazzName = classPrefix + "Resource";
-                    String resourceClazz = generateResourceClass(workFlowProcess, process.getId(), modelClazzName, compiledClassNames);
-
-                    final Path resourceFileNameRelative = transformPathToMavenPath( packageName + "/" + resourceClazzName + ".java");
-                    final Path resourceFileName = Paths.get(targetDirectory.getPath(), additionalCompilerPath, resourceFileNameRelative.toString());
-                    createSourceFile(resourceFileName, resourceClazz);
                 }
+                compiledClassNames.add(fname);
             }
+
+            for (ProcessSourceClass p : ps) {
+                Files.write(Paths.get(
+                        targetDirectory.getPath(),
+                        additionalCompilerPath,
+                        p.generatedFilePath()), p.generate().getBytes());
+            }
+
+
+            for (ProcessInstanceSourceClass pi : pis) {
+                Files.write(Paths.get(
+                        targetDirectory.getPath(),
+                        additionalCompilerPath,
+                        pi.generatedFilePath()), pi.generate().getBytes());
+            }
+
             if (!compiledClassNames.isEmpty()) {
                 String boostrapClass = generateProcessRuntimeBootstrap(compiledClassNames);
                 final Path bootstrapFileNameRelative = transformPathToMavenPath(BOOTSTRAP_CLASS.replaceAll("\\.", File.separator) + ".java");
@@ -216,6 +205,10 @@ public class GenerateProcessModelMojo extends AbstractKieMojo {
         }
 
 
+    }
+
+    private String getClassPrefix(Process process) {
+        return StringUtils.capitalize(ProcessToExecModelGenerator.INSTANCE.extractProcessId(process.getId()));
     }
 
     private Collection<? extends Process> parseProcessFile(Resource r) throws IOException, MojoExecutionException {
@@ -260,12 +253,6 @@ public class GenerateProcessModelMojo extends AbstractKieMojo {
         }
     }
 
-    private String getCompiledClassName(Path fileNameRelative) {
-        return fileNameRelative.toString()
-                                .replace("/", ".")
-                                .replace(".java", "");
-    }
-
     private Path transformPathToMavenPath(String generatedFile) {
         Path fileName = Paths.get(generatedFile);
         Path originalFilePath = Paths.get("src/main/java");
@@ -284,124 +271,6 @@ public class GenerateProcessModelMojo extends AbstractKieMojo {
     }
 
 
-    public String generateResourceClass(WorkflowProcess process, String processId, String dataClazzName, List<String> compiledClassNames) {
-
-        CompilationUnit clazz = JavaParser.parse(this.getClass().getResourceAsStream("/class-templates/RestResourceTemplate.java"));
-        clazz.setPackageDeclaration(process.getPackageName());
-        Optional<ClassOrInterfaceDeclaration> resourceClassOptional = clazz.findFirst(ClassOrInterfaceDeclaration.class, sl -> true);
-
-        if (resourceClassOptional.isPresent()) {
-            String extractedProcessId = ProcessToExecModelGenerator.INSTANCE.exctactProcessId(process.getId());
-            String documentation = (String) process.getMetaData().get("Documentation");
-            if (documentation == null) {
-                documentation = "Covers life cycle operation of " + extractedProcessId;
-            }
-
-            ClassOrInterfaceDeclaration resourceClass = resourceClassOptional.get();
-
-            resourceClass.setName(StringUtils.capitalize(extractedProcessId) + RESOURCE_CLASS_SUFFIX);
-            resourceClass.addAnnotation(new SingleMemberAnnotationExpr(new Name("Path"), new StringLiteralExpr("/" + extractedProcessId)))
-            .addAnnotation(new SingleMemberAnnotationExpr(new Name("Api"), new StringLiteralExpr(documentation)));
-
-            MethodCallExpr bootstrapMethod = new MethodCallExpr(new NameExpr(BOOTSTRAP_CLASS), "getProcessRuntime");
-            resourceClass.addFieldWithInitializer(InternalProcessRuntime.class, "processRuntime", bootstrapMethod, Keyword.PRIVATE);
-            resourceClass.addFieldWithInitializer(String.class, "processId", new StringLiteralExpr(processId), Keyword.PRIVATE);
-
-            ClassOrInterfaceType type = JavaParser.parseClassOrInterfaceType(dataClazzName);
-            ClassOrInterfaceType processInstanceType = JavaParser.parseClassOrInterfaceType(ProcessInstance.class.getSimpleName());
-            ClassOrInterfaceType workFlowInstanceType = JavaParser.parseClassOrInterfaceType(WorkflowProcessInstanceImpl.class.getSimpleName());
-            ClassOrInterfaceType optionalType = JavaParser.parseClassOrInterfaceType(Optional.class.getSimpleName());
-
-            // creates new resource
-            MethodDeclaration create = resourceClass.addMethod("createResource", Keyword.PUBLIC)
-            .setType(type)
-            .addAnnotation("POST")
-            .addAnnotation(new SingleMemberAnnotationExpr(new Name("Produces"), new NameExpr("MediaType.APPLICATION_JSON")))
-            .addAnnotation(new SingleMemberAnnotationExpr(new Name("Consumes"), new NameExpr("MediaType.APPLICATION_JSON")))
-            .addAnnotation(new SingleMemberAnnotationExpr(new Name("ApiOperation"), new StringLiteralExpr("Creates new instance of " + extractedProcessId)));
-
-            create.addParameter(type, "resource");
-            BlockStmt bodyCreate = create.createBody();
-
-            IfStmt nullResource = new IfStmt(new BinaryExpr(new NameExpr("resource"), new NullLiteralExpr(), com.github.javaparser.ast.expr.BinaryExpr.Operator.EQUALS)
-                                             , new ExpressionStmt(new AssignExpr(new NameExpr("resource"),
-                                                              new ObjectCreationExpr(null, type, NodeList.nodeList()), AssignExpr.Operator.ASSIGN)),
-                                             null);
-            bodyCreate.addStatement(nullResource);
-
-            MethodCallExpr startProcess = new MethodCallExpr(new FieldAccessExpr(new ThisExpr(), "processRuntime"), "startProcess");
-            startProcess.addArgument(new FieldAccessExpr(new ThisExpr(), "processId"));
-            startProcess.addArgument(new MethodCallExpr(new NameExpr("resource"), "toMap"));
-            VariableDeclarationExpr piField = new VariableDeclarationExpr(processInstanceType, "pi");
-            bodyCreate.addStatement(new AssignExpr(piField, startProcess, Operator.ASSIGN));
-
-            MethodCallExpr fromMap = new MethodCallExpr(new NameExpr(type.getName()), "fromMap");
-            fromMap.addArgument(new MethodCallExpr(new NameExpr("pi"), "getId"));
-            fromMap.addArgument(new MethodCallExpr(new EnclosedExpr(new CastExpr(workFlowInstanceType, new NameExpr("pi"))), "getVariables"));
-            bodyCreate.addStatement(new ReturnStmt(fromMap));
-
-            // get all resources
-            MethodCallExpr getInstances = new MethodCallExpr(new FieldAccessExpr(new ThisExpr(), "processRuntime"), "getProcessInstances");
-            MethodCallExpr streamInstances = new MethodCallExpr(getInstances, "stream");
-
-            BlockStmt filterBody = new BlockStmt();
-            MethodCallExpr getProcessId = new MethodCallExpr(new NameExpr("pi"), "getProcessId");
-            MethodCallExpr equlasByProcessId = new MethodCallExpr(getProcessId, "equals").addArgument(new FieldAccessExpr(new ThisExpr(), "processId"));
-            filterBody.addStatement(new ReturnStmt(equlasByProcessId));
-            LambdaExpr filterLambda = new LambdaExpr(
-                    new com.github.javaparser.ast.body.Parameter(new UnknownType(), "pi"),
-                    filterBody
-            );
-            MethodCallExpr filterInstances = new MethodCallExpr(streamInstances, "filter").addArgument(filterLambda);
-
-            BlockStmt mapBody = new BlockStmt();
-            mapBody.addStatement(new ReturnStmt(fromMap));
-            LambdaExpr mapLambda = new LambdaExpr(
-                    new com.github.javaparser.ast.body.Parameter(new UnknownType(), "pi"),
-                    mapBody
-            );
-
-            MethodCallExpr mapInstances = new MethodCallExpr(filterInstances, "map").addArgument(mapLambda);
-            MethodCallExpr collectInstances = new MethodCallExpr(mapInstances, "collect").addArgument(new MethodCallExpr(new NameExpr(JavaParser.parseClassOrInterfaceType(Collectors.class.getSimpleName()).getName()), "toList"));
-            resourceClass.addMethod("getResources", Keyword.PUBLIC).setType("List<" + dataClazzName + ">")
-            .addAnnotation("GET")
-            .addAnnotation(new SingleMemberAnnotationExpr(new Name("Produces"), new NameExpr("MediaType.APPLICATION_JSON")))
-            .addAnnotation(new SingleMemberAnnotationExpr(new Name("ApiOperation"), new StringLiteralExpr("Returns a list of " + extractedProcessId)))
-            .createBody().addStatement(new ReturnStmt(collectInstances));
-
-            // get given resource            
-            MethodDeclaration get = resourceClass.addMethod("getResource", Keyword.PUBLIC).setType(dataClazzName)
-            .addAnnotation("GET")
-            .addAnnotation(new SingleMemberAnnotationExpr(new Name("Path"), new StringLiteralExpr("/{id}")))
-            .addAnnotation(new SingleMemberAnnotationExpr(new Name("Produces"), new NameExpr("MediaType.APPLICATION_JSON")))
-            .addAnnotation(new SingleMemberAnnotationExpr(new Name("ApiOperation"), new StringLiteralExpr("Returns information about specified " + extractedProcessId)));
-
-
-            MethodCallExpr getInstance = new MethodCallExpr(new FieldAccessExpr(new ThisExpr(), "processRuntime"), "getProcessInstance").addArgument(new NameExpr("id")).addArgument(new BooleanLiteralExpr(true));
-            MethodCallExpr ofNullable = new MethodCallExpr(new NameExpr(optionalType.getName()), "ofNullable").addArgument(getInstance);
-            MethodCallExpr mapInstance = new MethodCallExpr(ofNullable, "map").addArgument(mapLambda);
-            MethodCallExpr notPresent = new MethodCallExpr(mapInstance, "orElse").addArgument(new NullLiteralExpr());
-
-            get.addAndGetParameter(Long.class, "id").addAnnotation(new SingleMemberAnnotationExpr(new Name("PathParam"), new StringLiteralExpr("id")));
-            get.createBody().addStatement(new ReturnStmt(notPresent));
-
-            // delete given resource
-            MethodDeclaration delete = resourceClass.addMethod("deleteResource", Keyword.PUBLIC).setType(dataClazzName)
-            .addAnnotation("DELETE")
-            .addAnnotation(new SingleMemberAnnotationExpr(new Name("Path"), new StringLiteralExpr("/{id}")))
-            .addAnnotation(new SingleMemberAnnotationExpr(new Name("Produces"), new NameExpr("MediaType.APPLICATION_JSON")))
-            .addAnnotation(new SingleMemberAnnotationExpr(new Name("ApiOperation"), new StringLiteralExpr("Cancels specified " + extractedProcessId)));
-
-            delete.addAndGetParameter(Long.class, "id").addAnnotation(new SingleMemberAnnotationExpr(new Name("PathParam"), new StringLiteralExpr("id")));
-            BlockStmt deleteBody = delete.createBody();
-            VariableDeclarationExpr itemField = new VariableDeclarationExpr(type, "item");
-            deleteBody.addStatement(new AssignExpr(itemField, notPresent, Operator.ASSIGN));
-            deleteBody.addStatement(new MethodCallExpr(new FieldAccessExpr(new ThisExpr(), "processRuntime"), "abortProcessInstance").addArgument(new NameExpr("id")));
-            deleteBody.addStatement(new ReturnStmt(new NameExpr("item")));
-
-        }
-        return clazz.toString();
-    }
 
     protected String generateProcessRuntimeBootstrap(List<String> compiledClassNames) {
         CompilationUnit clazz = JavaParser.parse(this.getClass().getResourceAsStream("/class-templates/ProcessRuntimeTemplate.java"));
@@ -435,5 +304,190 @@ public class GenerateProcessModelMojo extends AbstractKieMojo {
         return clazz.toString();
     }
 
+    class Generator {
+
+        private final WorkflowProcess workFlowProcess;
+        private final Path processFileName;
+        private final String classPrefix;
+        private final String packageName;
+        private final Path processFileNameRelative;
+        private final String processClazzName;
+        private String modelClazzName;
+
+        public Generator(Process process) {
+
+            this.workFlowProcess = (WorkflowProcess) process;
+
+            classPrefix = getClassPrefix(process);
+            packageName = process.getPackageName().replaceAll("\\.", "/");
+
+            // create class with executable model for the process
+            processClazzName = classPrefix + "Process";
+            processFileNameRelative = transformPathToMavenPath(packageName + "/" + processClazzName + ".java");
+
+            processFileName = Paths.get(targetDirectory.getPath(), additionalCompilerPath, processFileNameRelative.toString());
+
+            // create model class for all variables
+            modelClazzName = classPrefix + "Model";
+        }
+
+        public String generate() {
+            String sourceContent = ProcessToExecModelGenerator.INSTANCE.generate(workFlowProcess);
+
+            createSourceFile(processFileName, sourceContent);
+
+            if (isPublic()) {
+
+                String modelDataClazz = ProcessToExecModelGenerator.INSTANCE.generateModel(workFlowProcess);
+
+                final Path modelFileNameRelative = transformPathToMavenPath( packageName + "/" + modelClazzName + ".java");
+                final Path modelFileName = Paths.get(targetDirectory.getPath(), additionalCompilerPath, modelFileNameRelative.toString());
+                createSourceFile(modelFileName, modelDataClazz);
+
+
+                // create REST resource class for process
+                String resourceClazzName = classPrefix + "Resource";
+                String resourceClazz = generateResourceClass(workFlowProcess, workFlowProcess.getId(), modelClazzName);
+
+                final Path resourceFileNameRelative = transformPathToMavenPath( packageName + "/" + resourceClazzName + ".java");
+                final Path resourceFileName = Paths.get(targetDirectory.getPath(), additionalCompilerPath, resourceFileNameRelative.toString());
+                createSourceFile(resourceFileName, resourceClazz);
+            }
+
+            return getCompiledClassName(processFileNameRelative);
+        }
+
+        private boolean isPublic() {
+            return WorkflowProcess.PUBLIC_VISIBILITY.equalsIgnoreCase(workFlowProcess.getVisibility());
+        }
+
+        public String generateResourceClass(WorkflowProcess process, String processId, String dataClazzName) {
+
+            CompilationUnit clazz = JavaParser.parse(this.getClass().getResourceAsStream("/class-templates/RestResourceTemplate.java"));
+            clazz.setPackageDeclaration(process.getPackageName());
+            Optional<ClassOrInterfaceDeclaration> resourceClassOptional = clazz.findFirst(ClassOrInterfaceDeclaration.class, sl -> true);
+
+            if (resourceClassOptional.isPresent()) {
+                String extractedProcessId = ProcessToExecModelGenerator.INSTANCE.extractProcessId(process.getId());
+                String documentation = (String) process.getMetaData().get("Documentation");
+                if (documentation == null) {
+                    documentation = "Covers life cycle operation of " + extractedProcessId;
+                }
+
+                ClassOrInterfaceDeclaration resourceClass = resourceClassOptional.get();
+
+                resourceClass.setName(StringUtils.capitalize(extractedProcessId) + RESOURCE_CLASS_SUFFIX);
+                resourceClass.addAnnotation(new SingleMemberAnnotationExpr(new Name("Path"), new StringLiteralExpr("/" + extractedProcessId)))
+                        .addAnnotation(new SingleMemberAnnotationExpr(new Name("Api"), new StringLiteralExpr(documentation)));
+
+                MethodCallExpr bootstrapMethod = new MethodCallExpr(new NameExpr(BOOTSTRAP_CLASS), "getProcessRuntime");
+                resourceClass.addFieldWithInitializer(InternalProcessRuntime.class, "processRuntime", bootstrapMethod, Keyword.PRIVATE);
+                resourceClass.addFieldWithInitializer(String.class, "processId", new StringLiteralExpr(processId), Keyword.PRIVATE);
+
+                ClassOrInterfaceType type = JavaParser.parseClassOrInterfaceType(dataClazzName);
+                ClassOrInterfaceType processInstanceType = JavaParser.parseClassOrInterfaceType(ProcessInstance.class.getSimpleName());
+                ClassOrInterfaceType workFlowInstanceType = JavaParser.parseClassOrInterfaceType(WorkflowProcessInstanceImpl.class.getSimpleName());
+                ClassOrInterfaceType optionalType = JavaParser.parseClassOrInterfaceType(Optional.class.getSimpleName());
+
+                // creates new resource
+                MethodDeclaration create = resourceClass.addMethod("createResource", Keyword.PUBLIC)
+                        .setType(type)
+                        .addAnnotation("POST")
+                        .addAnnotation(new SingleMemberAnnotationExpr(new Name("Produces"), new NameExpr("MediaType.APPLICATION_JSON")))
+                        .addAnnotation(new SingleMemberAnnotationExpr(new Name("Consumes"), new NameExpr("MediaType.APPLICATION_JSON")))
+                        .addAnnotation(new SingleMemberAnnotationExpr(new Name("ApiOperation"), new StringLiteralExpr("Creates new instance of " + extractedProcessId)));
+
+                create.addParameter(type, "resource");
+                BlockStmt bodyCreate = create.createBody();
+
+                IfStmt nullResource = new IfStmt(new BinaryExpr(new NameExpr("resource"), new NullLiteralExpr(), com.github.javaparser.ast.expr.BinaryExpr.Operator.EQUALS)
+                        , new ExpressionStmt(new AssignExpr(new NameExpr("resource"),
+                                                            new ObjectCreationExpr(null, type, NodeList.nodeList()), AssignExpr.Operator.ASSIGN)),
+                                                 null);
+                bodyCreate.addStatement(nullResource);
+
+                MethodCallExpr startProcess = new MethodCallExpr(new FieldAccessExpr(new ThisExpr(), "processRuntime"), "startProcess");
+                startProcess.addArgument(new FieldAccessExpr(new ThisExpr(), "processId"));
+                startProcess.addArgument(new MethodCallExpr(new NameExpr("resource"), "toMap"));
+                VariableDeclarationExpr piField = new VariableDeclarationExpr(processInstanceType, "pi");
+                bodyCreate.addStatement(new AssignExpr(piField, startProcess, Operator.ASSIGN));
+
+                MethodCallExpr fromMap = new MethodCallExpr(new NameExpr(type.getName()), "fromMap");
+                fromMap.addArgument(new MethodCallExpr(new NameExpr("pi"), "getId"));
+                fromMap.addArgument(new MethodCallExpr(new EnclosedExpr(new CastExpr(workFlowInstanceType, new NameExpr("pi"))), "getVariables"));
+                bodyCreate.addStatement(new ReturnStmt(fromMap));
+
+                // get all resources
+                MethodCallExpr getInstances = new MethodCallExpr(new FieldAccessExpr(new ThisExpr(), "processRuntime"), "getProcessInstances");
+                MethodCallExpr streamInstances = new MethodCallExpr(getInstances, "stream");
+
+                BlockStmt filterBody = new BlockStmt();
+                MethodCallExpr getProcessId = new MethodCallExpr(new NameExpr("pi"), "getProcessId");
+                MethodCallExpr equlasByProcessId = new MethodCallExpr(getProcessId, "equals").addArgument(new FieldAccessExpr(new ThisExpr(), "processId"));
+                filterBody.addStatement(new ReturnStmt(equlasByProcessId));
+                LambdaExpr filterLambda = new LambdaExpr(
+                        new com.github.javaparser.ast.body.Parameter(new UnknownType(), "pi"),
+                        filterBody
+                );
+                MethodCallExpr filterInstances = new MethodCallExpr(streamInstances, "filter").addArgument(filterLambda);
+
+                BlockStmt mapBody = new BlockStmt();
+                mapBody.addStatement(new ReturnStmt(fromMap));
+                LambdaExpr mapLambda = new LambdaExpr(
+                        new com.github.javaparser.ast.body.Parameter(new UnknownType(), "pi"),
+                        mapBody
+                );
+
+                MethodCallExpr mapInstances = new MethodCallExpr(filterInstances, "map").addArgument(mapLambda);
+                MethodCallExpr collectInstances = new MethodCallExpr(mapInstances, "collect").addArgument(new MethodCallExpr(new NameExpr(JavaParser.parseClassOrInterfaceType(Collectors.class.getSimpleName()).getName()), "toList"));
+                resourceClass.addMethod("getResources", Keyword.PUBLIC).setType("List<" + dataClazzName + ">")
+                        .addAnnotation("GET")
+                        .addAnnotation(new SingleMemberAnnotationExpr(new Name("Produces"), new NameExpr("MediaType.APPLICATION_JSON")))
+                        .addAnnotation(new SingleMemberAnnotationExpr(new Name("ApiOperation"), new StringLiteralExpr("Returns a list of " + extractedProcessId)))
+                        .createBody().addStatement(new ReturnStmt(collectInstances));
+
+                // get given resource
+                MethodDeclaration get = resourceClass.addMethod("getResource", Keyword.PUBLIC).setType(dataClazzName)
+                        .addAnnotation("GET")
+                        .addAnnotation(new SingleMemberAnnotationExpr(new Name("Path"), new StringLiteralExpr("/{id}")))
+                        .addAnnotation(new SingleMemberAnnotationExpr(new Name("Produces"), new NameExpr("MediaType.APPLICATION_JSON")))
+                        .addAnnotation(new SingleMemberAnnotationExpr(new Name("ApiOperation"), new StringLiteralExpr("Returns information about specified " + extractedProcessId)));
+
+
+                MethodCallExpr getInstance = new MethodCallExpr(new FieldAccessExpr(new ThisExpr(), "processRuntime"), "getProcessInstance").addArgument(new NameExpr("id")).addArgument(new BooleanLiteralExpr(true));
+                MethodCallExpr ofNullable = new MethodCallExpr(new NameExpr(optionalType.getName()), "ofNullable").addArgument(getInstance);
+                MethodCallExpr mapInstance = new MethodCallExpr(ofNullable, "map").addArgument(mapLambda);
+                MethodCallExpr notPresent = new MethodCallExpr(mapInstance, "orElse").addArgument(new NullLiteralExpr());
+
+                get.addAndGetParameter(Long.class, "id").addAnnotation(new SingleMemberAnnotationExpr(new Name("PathParam"), new StringLiteralExpr("id")));
+                get.createBody().addStatement(new ReturnStmt(notPresent));
+
+                // delete given resource
+                MethodDeclaration delete = resourceClass.addMethod("deleteResource", Keyword.PUBLIC).setType(dataClazzName)
+                        .addAnnotation("DELETE")
+                        .addAnnotation(new SingleMemberAnnotationExpr(new Name("Path"), new StringLiteralExpr("/{id}")))
+                        .addAnnotation(new SingleMemberAnnotationExpr(new Name("Produces"), new NameExpr("MediaType.APPLICATION_JSON")))
+                        .addAnnotation(new SingleMemberAnnotationExpr(new Name("ApiOperation"), new StringLiteralExpr("Cancels specified " + extractedProcessId)));
+
+                delete.addAndGetParameter(Long.class, "id").addAnnotation(new SingleMemberAnnotationExpr(new Name("PathParam"), new StringLiteralExpr("id")));
+                BlockStmt deleteBody = delete.createBody();
+                VariableDeclarationExpr itemField = new VariableDeclarationExpr(type, "item");
+                deleteBody.addStatement(new AssignExpr(itemField, notPresent, Operator.ASSIGN));
+                deleteBody.addStatement(new MethodCallExpr(new FieldAccessExpr(new ThisExpr(), "processRuntime"), "abortProcessInstance").addArgument(new NameExpr("id")));
+                deleteBody.addStatement(new ReturnStmt(new NameExpr("item")));
+
+            }
+            return clazz.toString();
+        }
+
+
+        private String getCompiledClassName(Path fileNameRelative) {
+            return fileNameRelative.toString()
+                    .replace("/", ".")
+                    .replace(".java", "");
+        }
+
+
+    }
 }
 

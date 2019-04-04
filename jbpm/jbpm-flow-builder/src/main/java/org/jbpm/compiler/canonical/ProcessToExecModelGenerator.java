@@ -97,7 +97,7 @@ public class ProcessToExecModelGenerator extends AbstractVisitor {
         Optional<ClassOrInterfaceDeclaration> processMethod = clazz.findFirst(ClassOrInterfaceDeclaration.class, sl -> true);
 
         if (processMethod.isPresent()) {
-            processMethod.get().setName(StringUtils.capitalize(exctactProcessId(process.getId()) + PROCESS_CLASS_SUFFIX));
+            processMethod.get().setName(StringUtils.capitalize(extractProcessId(process.getId()) + PROCESS_CLASS_SUFFIX));
         }
                 
         visitProcess(process, clazz);
@@ -113,7 +113,7 @@ public class ProcessToExecModelGenerator extends AbstractVisitor {
         if (processMethod.isPresent()) {
             ClassOrInterfaceDeclaration modelClass = processMethod.get();
             
-            modelClass.setName(StringUtils.capitalize(exctactProcessId(process.getId()) + MODEL_CLASS_SUFFIX));
+            modelClass.setName(StringUtils.capitalize(extractProcessId(process.getId()) + MODEL_CLASS_SUFFIX));
         
             // setup of the toMap method body
             BlockStmt toMapBody = new BlockStmt();
@@ -358,7 +358,7 @@ public class ProcessToExecModelGenerator extends AbstractVisitor {
     
     
     
-    public String exctactProcessId(String processId) {
+    public String extractProcessId(String processId) {
         if (processId.contains(".")) {
             return processId.substring(processId.lastIndexOf(".") + 1);
         }

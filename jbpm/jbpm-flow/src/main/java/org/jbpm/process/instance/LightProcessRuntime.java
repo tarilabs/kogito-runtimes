@@ -18,6 +18,7 @@ package org.jbpm.process.instance;
 
 import java.io.IOException;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -75,6 +76,16 @@ public class LightProcessRuntime implements InternalProcessRuntime {
     private SignalManager signalManager;
     private TimerManager timerManager;
     private ProcessEventSupport processEventSupport;
+
+    public static LightProcessRuntime ofProcess(Process p) {
+        LightProcessRuntimeServiceProvider services =
+                new LightProcessRuntimeServiceProvider();
+
+        LightProcessRuntimeContext rtc = new LightProcessRuntimeContext(
+                Collections.singletonList(p));
+
+        return new LightProcessRuntime(rtc, services);
+    }
 
     public LightProcessRuntime(
             ProcessRuntimeContext runtimeContext,
