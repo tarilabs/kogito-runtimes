@@ -63,18 +63,14 @@ public class ProcessInstanceSourceClass {
                         new ClassOrInterfaceType(null, AbstractProcessInstance.class.getCanonicalName())
                                 .setTypeArguments(new ClassOrInterfaceType(null, modelTypeName)))
                 .addConstructor(Modifier.Keyword.PUBLIC)
-                .addParameter(ProcessSourceClass.processType(modelTypeName), "process")
+                .addParameter(ProcessSourceClass.processType(canonicalName), "process")
                 .addParameter(modelTypeName, "value")
                 .addParameter(ProcessRuntime.class.getCanonicalName(), "processRuntime")
                 .setBody(new BlockStmt().addStatement(new MethodCallExpr(
                         "super",
                         new NameExpr("process"),
                         new NameExpr("value"),
-                        new NameExpr("processRuntime")
-                )));
-        classDecl.addMethod("legacyProcess", Modifier.Keyword.PUBLIC)
-                .setType(Process.class.getCanonicalName())
-                .setBody(new BlockStmt().addStatement(new ReturnStmt(new NullLiteralExpr())));
+                        new NameExpr("processRuntime"))));
         return classDecl;
     }
 

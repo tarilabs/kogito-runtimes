@@ -13,7 +13,7 @@ import org.drools.javaparser.ast.stmt.BlockStmt;
 import org.drools.javaparser.ast.stmt.ReturnStmt;
 import org.drools.javaparser.ast.type.ClassOrInterfaceType;
 import org.jbpm.process.instance.LightProcessRuntime;
-import org.kie.submarine.process.Process;
+import org.kie.api.definition.process.Process;
 import org.kie.submarine.process.impl.AbstractProcess;
 
 import static org.drools.javaparser.ast.NodeList.nodeList;
@@ -83,16 +83,24 @@ public class ProcessSourceClass {
         return methodDeclaration;
     }
 
+    private MethodDeclaration legacyProcess() {
+        return new MethodDeclaration()
+                .addModifier(Modifier.Keyword.PROTECTED)
+                .setType(Process.class.getCanonicalName())
+                .setName("legacyProcess")
+                .setBody(new BlockStmt().addStatement(new ReturnStmt(
+                        new MethodCallExpr(new NameExpr(typeName + "Process"), "process"))));
+    }
+
     private MethodCallExpr createProcessRuntime() {
         return new MethodCallExpr(
                 new NameExpr(LightProcessRuntime.class.getCanonicalName()),
-                "ofProcess").addArgument(new MethodCallExpr(
-                        new NameExpr(typeName+"Process"), "process"));
+                "ofProcess").addArgument(
+                new MethodCallExpr(null, "legacyProcess"));
     }
 
     public static ClassOrInterfaceType processType(String canonicalName) {
-        return new ClassOrInterfaceType(null, Process.class.getCanonicalName())
-                .setTypeArguments(new ClassOrInterfaceType(null, canonicalName));
+        return new ClassOrInterfaceType(null, canonicalName + "Process_");
     }
 
     public static ClassOrInterfaceType abstractProcessType(String canonicalName) {
@@ -111,7 +119,8 @@ public class ProcessSourceClass {
 
         MethodDeclaration methodDeclaration = createInstanceMethod(processInstanceFQCN);
         cls.addExtendedType(abstractProcessType(modelTypeName))
-                .addMember(methodDeclaration);
+                .addMember(methodDeclaration)
+                .addMember(legacyProcess());
         return cls;
     }
 

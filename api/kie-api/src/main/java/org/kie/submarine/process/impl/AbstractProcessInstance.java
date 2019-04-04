@@ -13,11 +13,11 @@ import org.kie.submarine.rules.impl.ListDataSource;
 public abstract class AbstractProcessInstance<T> implements ProcessInstance<T> {
 
     private final T variables;
-    private final Process<T> process;
+    private final AbstractProcess<T> process;
     private final ProcessRuntime rt;
     private org.kie.api.runtime.process.ProcessInstance legacyProcessInstance;
 
-    public AbstractProcessInstance(Process<T> process, T variables, ProcessRuntime rt) {
+    public AbstractProcessInstance(AbstractProcess<T> process, T variables, ProcessRuntime rt) {
         this.process = process;
         this.rt = rt;
         this.variables = variables;
@@ -29,8 +29,18 @@ public abstract class AbstractProcessInstance<T> implements ProcessInstance<T> {
         Map<String, Object> map = bind(variables);
         String id = legacyProcess().getId();
         this.legacyProcessInstance =
-                rt.startProcess(id, map);
+                rt.createProcessInstance(id, map);
+        process.instances().update(
+                legacyProcessInstance.getId(), this);
+        this.rt.startProcess(id);
         unbind(variables, map);
+    }
+
+    public void abort() {
+        if (legacyProcessInstance == null) return;
+        long pid = legacyProcessInstance.getId();
+        process.instances().remove(pid);
+        this.rt.abortProcessInstance(pid);
     }
 
     @Override
