@@ -46,6 +46,7 @@ public abstract class AbstractProcessInstance<T> implements ProcessInstance<T> {
         return process;
     }
 
+    @Override
     public T variables() {
         return variables;
     }

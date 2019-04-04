@@ -1,5 +1,6 @@
 package org.kie.submarine.process.impl;
 
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.Optional;
 
@@ -13,6 +14,15 @@ class MapProcessInstanceManager<T> implements ProcessInstanceManager<T> {
     @Override
     public Optional<? extends ProcessInstance<T>> findById(long id) {
         return Optional.ofNullable(instances.get(id));
+    }
+
+    @Override
+    public Collection<? extends ProcessInstance<T>> values() {
+        return instances.values();
+    }
+
+    public Collection<? extends ProcessInstance<T>> all() {
+        return instances.values();
     }
 
     void update(long id, ProcessInstance<T> instance) {
